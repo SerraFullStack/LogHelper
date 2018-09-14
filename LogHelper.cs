@@ -37,30 +37,30 @@ namespace Shared
 
         Semaphore fileLock = new Semaphore(1, int.MaxValue);
 
-        public LogHelper(object sender, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path="")
+        public LogHelper(object sender, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path = "")
         {
             this.Initialize(sender.GetType().FullName, archiveType, ext, path);
         }
-        public LogHelper(string name, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path="")
+        public LogHelper(string name, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path = "")
         {
             this.Initialize(name, archiveType, ext, path);
         }
-        private void Initialize(string name, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path="")
+        private void Initialize(string name, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path = "")
         {
             this.archiveType = archiveType;
-			if (path == "")
-				path = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/logs";
-			
-			path = path.Replace("\\", "/");
-			
-			
+            if (path == "")
+                path = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) + "/logs";
+
+            path = path.Replace("\\", "/");
+
+
             if (!Directory.Exists(path))
                 Directory.CreateDirectory(path);
 
             fileName = path + "/" + name + "." + ext;
-			
-			//grant the file name uses UNIX Like file names (windows is compatible with this, and also work on Linux/Mono)
-			fileName = fileName.Replace("\\", "/");
+
+            //grant the file name uses UNIX Like file names (windows is compatible with this, and also work on Linux/Mono)
+            fileName = fileName.Replace("\\", "/");
 
 
             try
@@ -69,17 +69,28 @@ namespace Shared
             }
             catch { }
 
+            threadWrite();
+
 
         }
 
-        Semaphore sm = new Semaphore(1, int.MaxValue);
+        Semaphore sm = new Semaphore(0, int.MaxValue);
 
-        List<string> buffer = new List<string>();
+        List<object[]> buffer = new List<object[]>();
         public void log(params object[] msg)
+        {
+            lock (buffer)
+            {
+                buffer.Add(msg);
+            }
+            sm.Release();
+        }
+
+        private string objectArrayToLogLine(object[] msg)
         {
             //prepare the list
             StringBuilder msgText = new StringBuilder();
-            for (int cont = 0; cont <msg.Length; cont++)
+            for (int cont = 0; cont < msg.Length; cont++)
             {
                 msgText.Append(getObjectText(msg[cont]));
                 if (cont < msg.Length - 1)
@@ -90,12 +101,7 @@ namespace Shared
             string data = msgText.ToString();
             data = data.Replace("\r\n", "[[[[linebreak]]]]").Replace("\r", "[[[[linebreak]]]]").Replace("\n", "[[[[linebreak]]]]");
             data = data.Replace("[[[[linebreak]]]]", "\r\n                     ");
-
-			lock(buffer)
-			{
-				buffer.Add(data);
-			}
-            threadWrite();
+            return data;
         }
 
         private string getObjectText(object obj)
@@ -117,7 +123,7 @@ namespace Shared
                     object ret3 = obj.GetType().GetMethod("get_Item").Invoke(obj, new object[] { count });
                     ret.Append(getObjectText(ret3));
                     if (count < listCount - 1)
-                        ret .Append(", ");
+                        ret.Append(", ");
                 }
                 return ret.ToString();
             }
@@ -143,72 +149,56 @@ namespace Shared
         Thread thWrite = null;
         public void threadWrite()
         {
-            //checks if the thread already running
-            if (thWrite != null)
-                return;
 
             thWrite = new Thread(delegate ()
             {
-                string msg;
-
-                try
+                while (true)
                 {
-                    verifyArchive();
-                }
-                catch { }
-                fileLock.WaitOne();
-                sm.WaitOne();
+                    string msg;
+                    sm.WaitOne();
+                    
+                    fileLock.WaitOne();
 
-                while (buffer.Count > 0)
-                {
-					//the try bellow prevent any problem with buffer (this problemas occoured one time by unknown problem between c# and Windows)
-                    try
-                    {
-						lock(buffer)
-						{
-							msg = "[" + DateTime.Now.ToString() + "]" + buffer[0];
-							buffer.RemoveAt(0);
-						}
-                    }
-                    catch (Exception e)
-                    {
-                        msg = "[" + DateTime.Now.ToString() + "] LOGHELPER_ERROR: " +e.Message ;
-                        try { /*buffer.Clear();*/ } catch { }
-						
-                        /*buffer = new List<string>();*/
-                    }
-					
-                    try
-                    {
-                        if (System.IO.File.Exists(fileName))
-                            System.IO.File.AppendAllText(fileName, msg + "\r\n");
-                        else
-                            System.IO.File.WriteAllText(fileName, msg + "\r\n");
+                    //while (buffer.Count > 0)
+                    //{
+                        //the try bellow prevent any problem with buffer (this problemas occoured one time by unknown problem between c# and Windows)
+                        try
+                        {
+                            lock (buffer)
+                            {
+                                msg = "[" + DateTime.Now.ToString() + "]" + objectArrayToLogLine(buffer[0]);
+                                buffer.RemoveAt(0);
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            msg = "[" + DateTime.Now.ToString() + "] LOGHELPER_ERROR: " + e.Message;
+                            try { /*buffer.Clear();*/ } catch { }
 
-                        
-                    }
-                    catch
-                    {
-						Thread.Sleep(100);
+                            /*buffer = new List<string>();*/
+                        }
+
                         try
                         {
                             if (System.IO.File.Exists(fileName))
                                 System.IO.File.AppendAllText(fileName, msg + "\r\n");
                             else
                                 System.IO.File.WriteAllText(fileName, msg + "\r\n");
+                        }
+                        catch
+                        {
 
                         }
-                        catch 
-						{ 
-							Thread.Sleep(100);
-						}
+                    //}
+                    fileLock.Release();
+
+                    try
+                    {
+                        if (buffer.Count == 0)
+                            verifyArchive();
                     }
+                    catch { }
                 }
-
-                sm.Release();
-
-                fileLock.Release();
-                thWrite = null;
             });
             thWrite.Start();
         }
@@ -468,20 +458,23 @@ namespace Shared
         public static void d(string logName, params object[] data)
         {
             LogHelper logger = null;
-            try
+            lock(LogHelper.catLoggers)
             {
-                if (LogHelper.catLoggers.ContainsKey(logName))
-                    logger = LogHelper.catLoggers[logName];
-                else
+                try
+                {
+                    if (LogHelper.catLoggers.ContainsKey(logName))
+                        logger = LogHelper.catLoggers[logName];
+                    else
+                    {
+                        logger = new LogHelper(logName);
+                        LogHelper.catLoggers[logName] = logger;
+                    }
+                }
+                catch
                 {
                     logger = new LogHelper(logName);
                     LogHelper.catLoggers[logName] = logger;
                 }
-            }
-            catch
-            {
-                logger = new LogHelper(logName);
-                LogHelper.catLoggers[logName] = logger;
             }
 
             logger.log(data);
