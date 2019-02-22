@@ -1,5 +1,5 @@
 # libs.loghelper
 
-Library to facilitate a generation of logs in C # projects.
+A library to create logs in C # simply and quickly. This library was inspired by the "cat" system of the Android environment.
 
-A library was inspired without registration cat from Android Studio.
+This library uses threads to write log data to text files which means that calls do not degrade the performance of regular applications
