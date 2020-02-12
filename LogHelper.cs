@@ -1,14 +1,19 @@
-﻿/*
+/*
 	by: Rafael Tonello (tonello.rafinha@gmail.com)
 	
-	Version; 1.3.0.0
+	Version; 1.3.1.0
+	         | | | +---> Bugs and compilation
+	         | | +-----> Otimizations and improvments
+	         | +-------> New resources                
+	         +---------> Big changes and incompatibilities           
 
 	History:
-		1.0.0.1 -> 23/01/2018-> Fixed problem with file access conflict
-		1.1.0.1 -> 03/04/2018-> Identation in line breaks
-		1.2.0.0 -> 05/06/2018-> Compacting logs before archive this (if the app is running under Linux or if there is the 7z.exe in app folder)
-		1.2.0.2 -> 05/06/2018-> Solved a fileLock problem with threadWrite
-		1.3.0.0 -> 03/08/2018-> Now, logs function receive a variable number of arguments.
+		1.0.0.1 -> 2018-01-23-> Fixed problem with file access conflict
+		1.1.0.1 -> 2018-04-03-> Identation in line breaks
+		1.2.0.0 -> 2018-06-05-> Compacting logs before archive this (if the app is running under Linux or if there is the 7z.exe in app folder)
+		1.2.0.2 -> 2018-06-05-> Solved a fileLock problem with threadWrite
+		1.3.0.0 -> 2018-08-03-> Now, logs function receive a variable number of arguments.
+		1.3.1.0 -> 2020-02-12-> Dates and times formats changed to ISO8601 format
 
 */
 using System;
@@ -25,7 +30,7 @@ namespace Shared
 {
 
 
-    class LogHelper
+    public class LogHelper
     {
         public enum ArchiveType { daily, hourly, weekly, mounthly, noArchive }
 
@@ -35,12 +40,30 @@ namespace Shared
         string fileName;
         object logLock = new object();
 
+        /// <summary>
+        /// this semaphore is used to control acces to physical file.
+        /// </summary>
         Semaphore fileLock = new Semaphore(1, int.MaxValue);
 
+        /// <summary>
+        /// Create a log helper
+        /// </summary>
+        /// <param name="sender">Pointer to object, module/subsystem or sytem section responsible for this log. It will be used to determine the log file name</param>
+        /// <param name="archiveType">The type of archiving (daily, hourly, weekly, mounthly or noArchive)</param>
+        /// <param name="ext">The Extension of the log file. De defaulf value if 'log'</param>
+        /// <param name="path">The destinatio ndirectory of the log file. Let empty to use a folder named 'logs' in the root of current assembly.</param>
         public LogHelper(object sender, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path = "")
         {
             this.Initialize(sender.GetType().FullName, archiveType, ext, path);
         }
+
+        /// <summary>
+        /// Create a log helper
+        /// </summary>
+        /// <param name="name">A name of module/subsystem or sytem name. This value will be used to compose the log file name</param>
+        /// <param name="archiveType">The type of archiving (daily, hourly, weekly, mounthly or noArchive)</param>
+        /// <param name="ext">The Extension of the log file. De defaulf value if 'log'</param>
+        /// <param name="path">The destinatio ndirectory of the log file. Let empty to use a folder named 'logs' in the root of current assembly.</param>
         public LogHelper(string name, ArchiveType archiveType = ArchiveType.mounthly, string ext = "log", string path = "")
         {
             this.Initialize(name, archiveType, ext, path);
@@ -76,7 +99,15 @@ namespace Shared
 
         Semaphore sm = new Semaphore(0, int.MaxValue);
 
+        /// <summary>
+        /// This buffer is used to store temporarily the log messages while they wait to be written to the file
+        /// </summary>
         List<object[]> buffer = new List<object[]>();
+
+        /// <summary>
+        /// Log on or a a list of string or object. In cas of objects, the library will try to converte their data to string (using ToString function)
+        /// </summary>
+        /// <param name="msg">A single of an array of string, or objects.</param>
         public void log(params object[] msg)
         {
             lock (buffer)
@@ -108,7 +139,7 @@ namespace Shared
         {
             if (obj is string)
                 return (string)obj;
-            else if (obj.GetType().Name.Contains("System.Collections.Generic.List"))
+            else if (obj.GetType().Name.Contains("List`"))
             {
                 //get list length
                 int listCount = (int)obj.GetType().GetMethod("get_Count").Invoke(obj, new object[] { });
@@ -147,64 +178,79 @@ namespace Shared
 
 
         Thread thWrite = null;
-        public void threadWrite()
+        private void threadWrite()
         {
 
             thWrite = new Thread(delegate ()
             {
                 while (true)
                 {
-                    string msg;
                     sm.WaitOne();
-                    
-                    fileLock.WaitOne();
+                    Flush();
+                    Thread.Sleep(2);
 
-                    //while (buffer.Count > 0)
-                    //{
-                        //the try bellow prevent any problem with buffer (this problemas occoured one time by unknown problem between c# and Windows)
-                        try
-                        {
-                            lock (buffer)
-                            {
-                                msg = "[" + DateTime.Now.ToString() + "]" + objectArrayToLogLine(buffer[0]);
-                                buffer.RemoveAt(0);
-                            }
-                        }
-                        catch (Exception e)
-                        {
-                            msg = "[" + DateTime.Now.ToString() + "] LOGHELPER_ERROR: " + e.Message;
-                            try { /*buffer.Clear();*/ } catch { }
-
-                            /*buffer = new List<string>();*/
-                        }
-
-                        try
-                        {
-                            if (System.IO.File.Exists(fileName))
-                                System.IO.File.AppendAllText(fileName, msg + "\r\n");
-                            else
-                                System.IO.File.WriteAllText(fileName, msg + "\r\n");
-                        }
-                        catch
-                        {
-
-                        }
-                    //}
-                    fileLock.Release();
-
-                    try
-                    {
-                        if (buffer.Count == 0)
-                            verifyArchive();
-                    }
-                    catch { }
                 }
             });
             thWrite.Start();
         }
 
+        public void Flush()
+        {
+            string msg;
 
-        Thread thVerifyArchive = null;
+            fileLock.WaitOne(5000);
+
+            while (buffer.Count > 0)
+            {
+
+                //while (buffer.Count > 0)
+                //{
+                //the try bellow prevent any problem with buffer (this problemas occoured one time by unknown problem between c# and Windows)
+                try
+                {
+                    lock (buffer)
+                    {
+                        msg = "[" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") + "]" + objectArrayToLogLine(buffer[0]);
+                        buffer.RemoveAt(0);
+                    }
+                }
+                catch (Exception e)
+                {
+                    msg = "[" + DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ") + "] LOGHELPER_ERROR: " + e.Message;
+                    try { /*buffer.Clear();*/ } catch { }
+
+                    /*buffer = new List<string>();*/
+                }
+
+                try
+                {
+                    if (System.IO.File.Exists(fileName))
+                        System.IO.File.AppendAllText(fileName, msg + "\r\n");
+                    else
+                        System.IO.File.WriteAllText(fileName, msg + "\r\n");
+                }
+                catch
+                {
+
+                }
+                //}
+            }
+            fileLock.Release();
+
+            try
+            {
+                if (buffer.Count == 0)
+                    verifyArchive();
+            }
+            catch { }
+        }
+
+
+        Task thVerifyArchive = null;
+
+        /// <summary>
+        /// Checks if file must be archived.
+        /// </summary>
         public void verifyArchive()
         {
             if (thVerifyArchive != null)
@@ -212,7 +258,7 @@ namespace Shared
 
             fileLock.WaitOne();
 
-            thVerifyArchive = new Thread(delegate ()
+            thVerifyArchive = new Task(delegate ()
             {
 
                 bool archive = false;
@@ -267,7 +313,7 @@ namespace Shared
                         if (fileCreationTime.Hour != DateTime.Now.Hour)
                         {
                             archive = true;
-                            destName = fileCreationTime.ToString("dd MM yyyy - HH mm ss");
+                            destName = fileCreationTime.ToString("yyyy MM dd - HH mm ss");
                         }
                     }
                     else if (this.archiveType == ArchiveType.daily)
@@ -275,7 +321,7 @@ namespace Shared
                         if (fileCreationTime.Day != DateTime.Now.Day)
                         {
                             archive = true;
-                            destName = fileCreationTime.ToString("dd MM yyyy");
+                            destName = fileCreationTime.ToString("yyyy MM dd");
                         }
                     }
                     else if (this.archiveType == ArchiveType.weekly)
@@ -283,7 +329,7 @@ namespace Shared
                         if (DateTime.Now.Subtract(fileCreationTime).TotalDays > 7)
                         {
                             archive = true;
-                            destName = fileCreationTime.ToString("dd MM yyyy");
+                            destName = fileCreationTime.ToString("yyyy MM dd");
                         }
                     }
                     else if (this.archiveType == ArchiveType.mounthly)
@@ -292,7 +338,7 @@ namespace Shared
                         if (m1 != DateTime.Now.Month)
                         {
                             archive = true;
-                            destName = fileCreationTime.ToString("MM yyyy");
+                            destName = fileCreationTime.ToString("yyyy MM");
                         }
                     }
 
